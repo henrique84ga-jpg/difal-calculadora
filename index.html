@@ -1,0 +1,264 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<title>Simulador DIFAL SP – XML NF-e</title>
+
+<!-- jsPDF + AutoTable -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.5.29/jspdf.plugin.autotable.min.js"></script>
+
+<style>
+body{font-family:Arial;background:#f0f2f5;padding:20px}
+h2{color:#1a3b5c}
+.box{background:#fff;padding:12px;border-radius:6px;margin-bottom:12px}
+table{width:100%;border-collapse:collapse;font-size:12px;min-width:1500px}
+th,td{border:1px solid #ccc;padding:4px}
+th{background:#203764;color:#fff}
+td{text-align:right}
+td.left{text-align:left}
+input{width:100%;border:none;background:transparent;text-align:right}
+.col-edit{background:#fff4cc}
+.col-calc{background:#f2f2f2}
+.col-res{background:#e2efda;font-weight:bold}
+button{padding:10px 18px;background:#203764;color:#fff;border:none;border-radius:4px;cursor:pointer}
+</style>
+</head>
+
+<body>
+
+<h2>Simulador DIFAL SP – Importação XML NF-e</h2>
+<input type="file" accept=".xml" id="xmlFile">
+
+<div class="box" id="dadosNota" style="display:none">
+<b>CNPJ:</b> <span id="cnpj"></span> |
+<b>Razão Social:</b> <span id="razao"></span> |
+<b>NF-e nº:</b> <span id="numeroNFe"></span> |
+<b>Chave:</b> <span id="chaveNFe"></span><br>
+<b>Data de Emissão:</b> <span id="data"></span> |
+<b>Valor Total NF-e:</b> <span id="totalNF"></span>
+</div>
+
+<div class="box">
+<table>
+<thead>
+<tr>
+<th>Item</th>
+<th>Descrição</th>
+<th>NCM</th>
+<th>Produto</th>
+<th>IPI</th>
+<th>Outras Desp.</th>
+<th>Orig %</th>
+<th>SP %</th>
+<th>ICMS Orig</th>
+<th>ICMS SP</th>
+<th>DIFAL</th>
+</tr>
+</thead>
+<tbody id="itens"></tbody>
+</table>
+</div>
+
+<button onclick="salvarPDF()">Salvar PDF</button>
+
+<script>
+// ================= UTIL =================
+const fmt = v => v.toLocaleString('pt-BR',{minimumFractionDigits:2});
+const numBR  = v => parseFloat((v||"0").replace(/\./g,"").replace(",",".")) || 0;
+const numXML = v => parseFloat(v || 0);
+
+// ================= XML =================
+document.getElementById("xmlFile").addEventListener("change", e=>{
+  const file=e.target.files[0];
+  if(!file) return;
+
+  const reader=new FileReader();
+  reader.onload=ev=>{
+    const xml=new DOMParser().parseFromString(ev.target.result,"text/xml");
+    carregarCabecalho(xml);
+    carregarItens(xml);
+  };
+  reader.readAsText(file);
+});
+
+function carregarCabecalho(xml){
+  const ns=xml.documentElement.namespaceURI;
+  const emit=xml.getElementsByTagNameNS(ns,"emit")[0];
+  const ide =xml.getElementsByTagNameNS(ns,"ide")[0];
+  const tot =xml.getElementsByTagNameNS(ns,"ICMSTot")[0];
+
+  cnpj.innerText = emit?.getElementsByTagNameNS(ns,"CNPJ")[0]?.textContent || "";
+  razao.innerText = emit?.getElementsByTagNameNS(ns,"xNome")[0]?.textContent || "";
+  numeroNFe.innerText = ide?.getElementsByTagNameNS(ns,"nNF")[0]?.textContent || "";
+  chaveNFe.innerText = xml.getElementsByTagNameNS(ns,"infNFe")[0]?.getAttribute("Id")?.replace("NFe","") || "";
+
+  const d = ide?.getElementsByTagNameNS(ns,"dhEmi")[0] || ide?.getElementsByTagNameNS(ns,"dEmi")[0];
+  data.innerText = d ? d.textContent.substring(0,10).split("-").reverse().join("/") : "";
+
+  totalNF.innerText = fmt(numXML(tot?.getElementsByTagNameNS(ns,"vNF")[0]?.textContent));
+  dadosNota.style.display="block";
+}
+
+function carregarItens(xml){
+  const ns=xml.documentElement.namespaceURI;
+  const dets=xml.getElementsByTagNameNS(ns,"det");
+  itens.innerHTML="";
+  let i=1;
+
+  for(const det of dets){
+    const prod=det.getElementsByTagNameNS(ns,"prod")[0];
+    if(!prod) continue;
+
+    const desc=prod.getElementsByTagNameNS(ns,"xProd")[0]?.textContent||"";
+    const ncm =prod.getElementsByTagNameNS(ns,"NCM")[0]?.textContent||"";
+    const vProd=numXML(prod.getElementsByTagNameNS(ns,"vProd")[0]?.textContent);
+    const vFrete=numXML(prod.getElementsByTagNameNS(ns,"vFrete")[0]?.textContent);
+
+    let vIPI=0;
+    const ipi=det.getElementsByTagNameNS(ns,"IPI")[0];
+    if(ipi) vIPI=numXML(ipi.getElementsByTagNameNS(ns,"vIPI")[0]?.textContent);
+
+    let pICMS=0, vICMSST=0;
+    const icms=det.getElementsByTagNameNS(ns,"ICMS")[0];
+    if(icms){
+      for(const g of icms.children){
+        pICMS = numXML(g.getElementsByTagNameNS(ns,"pICMS")[0]?.textContent);
+        vICMSST = numXML(g.getElementsByTagNameNS(ns,"vICMSST")[0]?.textContent);
+        break;
+      }
+    }
+
+    const outras = vFrete + vICMSST;
+
+    itens.insertAdjacentHTML("beforeend",`
+    <tr>
+      <td>${i}</td>
+      <td class="left">${desc}</td>
+      <td class="left">${ncm}</td>
+      <td class="col-edit"><input id="vp${i}" value="${fmt(vProd)}" oninput="calcular(${i})"></td>
+      <td class="col-edit"><input id="vi${i}" value="${fmt(vIPI)}" oninput="calcular(${i})"></td>
+      <td class="col-edit"><input id="od${i}" value="${fmt(outras)}" oninput="calcular(${i})"></td>
+      <td class="col-edit"><input id="ao${i}" value="${pICMS}" oninput="calcular(${i})"></td>
+      <td class="col-edit"><input id="ad${i}" value="18" oninput="calcular(${i})"></td>
+      <td id="io${i}" class="col-calc">0,00</td>
+      <td id="is${i}" class="col-calc">0,00</td>
+      <td id="df${i}" class="col-res">0,00</td>
+    </tr>
+    `);
+
+    calcular(i);
+    i++;
+  }
+}
+
+/* ================= ALTERAÇÃO ÚNICA ================= */
+function calcular(i){
+  const vp=numBR(document.getElementById("vp"+i).value);
+  const vi=numBR(document.getElementById("vi"+i).value);
+  const od=numBR(document.getElementById("od"+i).value);
+  const ao=numBR(document.getElementById("ao"+i).value)/100;
+  const ad=numBR(document.getElementById("ad"+i).value)/100;
+
+  if(vp<=0 || ao<=0 || ad<=0){
+    document.getElementById("io"+i).innerText="0,00";
+    document.getElementById("is"+i).innerText="0,00";
+    document.getElementById("df"+i).innerText="0,00";
+    return;
+  }
+
+  const icmsOrig=vp*ao;
+  const base=((vp-icmsOrig)/(1-ad))+vi+od;
+  const icmsSP=base*ad;
+  const difal=icmsSP-icmsOrig;
+
+  document.getElementById("io"+i).innerText=fmt(icmsOrig);
+  document.getElementById("is"+i).innerText=fmt(icmsSP);
+  document.getElementById("df"+i).innerText=fmt(difal);
+}
+/* ================================================== */
+
+// ================= PDF =================
+function salvarPDF(){
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF("p","mm","a4");
+
+  doc.setFontSize(13);
+  doc.setFont("helvetica","bold");
+  doc.text("Demonstrativo DIFAL – SP (Por Dentro)",105,18,{align:"center"});
+
+  doc.setFontSize(9);
+  doc.setFont("helvetica","normal");
+
+  let y=30;
+  doc.text(`CNPJ: ${cnpj.innerText}`,14,y); y+=5;
+  doc.text(`Razão Social: ${razao.innerText}`,14,y); y+=5;
+  doc.text(`NF-e nº: ${numeroNFe.innerText}`,14,y); y+=5;
+  doc.text(`Chave de Acesso: ${chaveNFe.innerText}`,14,y); y+=5;
+  doc.text(`Data de Emissão: ${data.innerText}`,14,y); y+=5;
+  doc.text(`Valor Total NF-e: ${totalNF.innerText}`,14,y);
+
+  const linhas=[];
+  let totalDifal=0;
+
+  document.querySelectorAll("#itens tr").forEach(tr=>{
+    const tds=tr.querySelectorAll("td");
+    if(!tds[10] || tds[10].innerText==="0,00") return;
+
+    const difalVal=parseFloat(tds[10].innerText.replace(/\./g,"").replace(",","."))||0;
+    totalDifal+=difalVal;
+
+    linhas.push([
+      tds[0].innerText,
+      tds[1].innerText,
+      tds[2].innerText,
+      tds[3].querySelector("input").value,
+      tds[4].querySelector("input").value,
+      tds[8].innerText,
+      tds[9].innerText,
+      tds[10].innerText
+    ]);
+  });
+
+  doc.autoTable({
+    startY:y+8,
+    head:[["Item","Descrição","NCM","Produto","IPI","ICMS Orig","ICMS SP","DIFAL"]],
+    body:linhas,
+    theme:"grid",
+    styles:{fontSize:8,cellPadding:2},
+    headStyles:{fillColor:[32,55,100],textColor:255},
+    didDrawPage:()=>{
+      const h=doc.internal.pageSize.height;
+      doc.setFont("helvetica","bold");
+      doc.setFontSize(10);
+      doc.text(
+        `TOTAL DIFAL: R$ ${totalDifal.toLocaleString("pt-BR",{minimumFractionDigits:2})}`,
+        200,
+        h-15,
+        {align:"right"}
+      );
+    }
+  });
+
+  const blob=doc.output("blob");
+  const url=URL.createObjectURL(blob);
+
+  const nomeArquivo =
+    "Difal " +
+    razao.innerText.replace(/[^\w\s]/gi,"").trim() +
+    " NF " +
+    numeroNFe.innerText +
+    ".pdf";
+
+  const a=document.createElement("a");
+  a.href=url;
+  a.download=nomeArquivo;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+</script>
+
+</body>
+</html>
